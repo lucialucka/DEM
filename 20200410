@@ -1,0 +1,259 @@
+# delete all variables, load libraries
+rm(list=ls(all=TRUE))
+
+#####################################################################
+# Epidemic Model inspired by CZ Ministry of Health
+# function assume states
+# S susceptible
+# I1, I2, I3 infected but not yet infectious
+# I4, I5, I6, I7 infectious 
+# I8 ... izolated
+# AS ... asymptomatic patient with probability pAS
+# R ... recovered
+# D ... dead with probability IFR
+# InitCond must be of vector (S, I1, I2,..,I8, AS, R, D) of length 12
+# Time is number of modeled days
+# pAS is probability that patient is asymptomatic
+# IFR is propability of dying in infected population (infection fatality rate)
+# dInf is average stay in state 8
+# R0 is the basic reproduction number, i.e. how many people will get infected by one infectious in susceptible population during infectious perioud
+# Transmission is array of imposed decrease in contacts (social distancing measures)
+# m is assumed number of contacts, the model is not sensitive to this parameter
+
+epidemicMZ <- function(InitCond, Time, pAS, IFR, dInf, R0, Management=array(1,dim=Time), m=50){
+
+N = sum(InitCond)
+
+IndexInf = 5:8  # index of infectious states
+#InitCond[IndexInf]
+
+# m number of contacts in day, model is not sensitive to this parameter
+p = rep(R0/(length(IndexInf)*m),Time)   			
+C = rep(m,Time)* Management 		# number of average contacts limited by change in behaviour
+
+# dynamic states
+s = length(InitCond)    			# number of states
+State = array(dim=c(s,Time+1))			# states vector
+rownames(State) = names(InitCond)
+colnames(State) = paste("t", 0:Time, sep="")
+State[,1] = InitCond  # initial conditions
+
+# dynamic transsition matrix
+Tmatrix <- array(0,dim=c(s,s,Time))
+rownames(Tmatrix) <- colnames(Tmatrix) <- rownames(State)
+Amatrix <- Tmatrix
+
+# staticka pole
+Tmatrix[2:7,3:8,] = diag(6)          	# common way for all ill
+Tmatrix["I7","AS",] = pAS			# asymptomatic patients (final state)
+Tmatrix["I7","I8",] = (1-pAS) 		# rest
+Tmatrix["I8","D",] = IFR/(1-pAS)/dInf	   	# dead
+Tmatrix["I8","R",] = (1-IFR/(1-pAS))/dInf			# recovered
+Tmatrix["I8","I8",] = 1-Tmatrix["I8","D",]-Tmatrix["I8","R",]			# dummy state for lenght, average stay in I8 is dInf
+Tmatrix["AS","AS",] = 1				# AS is final state (probably)
+Tmatrix["R","R",] = 1				# R is final state (probably)
+Tmatrix["D","D",] = 1				# D is final state
+# Tmatrix[,,1]
+
+# dynamicka pole
+for (i in 1:(Time)) {
+Infectious = sum(State[IndexInf,i])
+Tmatrix["S","I1",i] = 1 - (1- p[i]*Infectious/(N-1))^C[i] # probability of getting infected
+Tmatrix["S","S",i] = 1 - Tmatrix["S","I1",i]	
+State[,i+1] = State[,i]%*%Tmatrix[,,i]
+# matrix of absolute probalities
+if(i == 1){Amatrix[,,1] = Tmatrix[,,i]} else {Amatrix[,,i] = Amatrix[,,i-1]%*%Tmatrix[,,i]}
+}
+
+# apply(Tmatrix[,,],c(1,3),sum) # test souctu
+# apply(Amatrix[,,],c(1,3),sum) # test souctu
+# Amatrix[,,Time]	# matice prechodu na konci, pravdepodobnost pri nakazeni by mela byt vzdy IFR			
+
+res = list()
+res$State = State
+res$Susceptible = State["S",]
+res$CumCases = N-State["S",]
+res$Infectious = apply(State[IndexInf,],2,sum)
+res$InfectiousNames = rownames(State)[IndexInf]
+res$Asymptotic = State["AS",]
+res$Recovered = State["R",]
+res$TotalDeaths = State["D",]
+res$NewDeaths = State["D",]- c(0,State["D",-Time])
+res$NewCases = c(NA,State["S",-Time])- State["S",]
+res$Tmatrix = Tmatrix
+res$Amatrix = Amatrix
+res$Management = Management
+res$Time
+res
+}
+
+
+################################################################
+# Epidemic MZ basic calculation
+N = 10600000
+# vector of initial conditions
+InitCond = rep(0, 12)
+names(InitCond) = c("S", paste("I", 1:8, sep=""), "AS", "R", "D")
+InitCond["I1"] = 1
+InitCond["S"] = N-InitCond["I1"]
+InitCond
+
+Time = 365		# model time
+pAS = 0.1   	# probability of asymptotic patients
+IFR = 0.01		# infection fatality rate (must be smaller then pICU
+R0 = 5
+dInf = 5 		# average stay in state 8 (before dying or recovering)
+
+Management = array(1,dim=Time) # 1 means no restriction
+res = epidemicMZ(InitCond, Time, pAS, IFR, dInf, R0, Management=array(1,dim=Time), m=50)
+names(res)
+res$Amatrix[,,Time] # matice prechodu na konci casu
+# apply(res$Tmatrix[,,],c(1,3),sum) # test souctu
+# apply(res$Amatrix[,,],c(1,3),sum) # test souctu
+
+
+
+
+
+
+#################################################################
+# quarantine in time, output graph in pdf
+dev.off() # zavreni grafickeho okna
+
+getwd() # sem se ulozi pdf
+# soubor pdf se stejnym nazvem musi byt zavreny
+
+pdf("MZ epidemic model with quarantine.pdf", onefile=TRUE, width = 10)
+
+#png(file="example%02d.png", width=200, height=200) # misto jednoho pdf udela mnoho obrazku
+
+d1 = 42 # neznamy cas zacatku karanteny, nize pro ruzne d1 se vytvori novy obrazek, v pdf se da listovat
+for( d1 in seq(10,100,1)){
+d2 = 90
+
+# Management of disease
+Management = array(1,dim=Time) # decreased contacts via factor (1 = normal state)
+# 2.64 UZIS R0 estimation
+Management[d1+0:4] = 1.84/2.64 # 7.3.2020 (day 0) quarantine after return from Italy
+Management[d1+5:8] = 1.32/2.64 # 12.3.2020 (day 5) state of emergency declared
+Management[d1+9:30] = 1.1/2.64 # 16.3.2020 (day 9) restrictions on the free movement of persons
+n <- d2 <- 90
+Management[d1+31:(n+31)] = 1.1/2.64+ 0:(n)*(1-1.1/2.64)/(n) # lineráně zpět během tří mesíců
+
+# day of quarantine with given number of deaths
+TD = d1+32 # 8.4.2020 (day 32) 99 úmrtí
+deaths = 99
+
+# expected development, function is defined at the bottom of the file
+res0 = epidemicMZ(InitCond, Time, pAS, IFR, dInf, R0)
+which.max(res0$Infectious)
+res1 = epidemicMZ(InitCond, Time, pAS, IFR, dInf, R0, Management)
+
+D = min(which(res1$TotalDeaths>deaths))
+
+split.screen(c(2,3))
+screen(1)
+plot(res1$Management, type="l", main = paste("R0 =",R0,"limited",d1,"+",d2), 
+  col = "red", xlab="", ylab ="")
+abline(v = D, col="blue")
+abline(v = TD, col="skyblue")
+
+screen(2)
+plot(res0$Infectious/N, type="l", main = "Infectious Proportion", xlab="", ylab ="")
+lines(res1$Infectious/N, type="l", col="red")
+res1$InfectiousNames
+abline(v = D, col="blue")
+abline(v = TD, col="skyblue")
+
+screen(3)
+plot(res0$CumCases/N , type="l", main = "Cummulative Proportion", xlab="", ylab ="")
+lines(res1$CumCases/N , type="l", col="red")
+abline(v = D, col="blue")
+abline(v = TD, col="skyblue")
+
+screen(4)
+plot(res0$NewCases, type="l", main = "New Cases", xlab="", ylab ="")
+lines(res1$NewCases, type="l", col="red")
+abline(v = D, col="blue")
+abline(v = TD, col="skyblue")
+
+screen(5)
+plot(res0$NewDeaths, type="l", main = "New Deaths", xlab="", ylab ="")
+lines(res1$NewDeaths, type="l", col="red")
+#abline(h = 4450, col="blue")
+abline(v = D, col="blue")
+abline(v = TD, col="skyblue")
+
+screen(6)
+plot(res0$TotalDeaths, type="l", main = paste("Total Deaths, IFR =", IFR), xlab="", ylab ="")
+lines(res1$TotalDeaths, type="l", col="red")
+abline(v = D, col="blue")
+abline(v = TD, col="skyblue")
+
+close.screen(all.screens = TRUE)
+}
+dev.off()
+
+
+
+######################################################
+# kde muzeme byt v epidemii dle poctu mrtvych?
+# model nepredpoklada zadna omezeni (daji se pridat pomoci management analogicky)
+
+R0 = 2.64
+Time = 365
+Management = array(1,dim=Time) # decreased transmission via factor
+# Management[90+0:180] = 0.6
+
+dev.off()
+split.screen(c(2,1))
+screen(1)
+# parametry
+InitCond; Time; pAS; IFR; dInf; R0; Management
+res = epidemicMZ(InitCond, Time, pAS, IFR, dInf, R0, Management)
+
+
+title = paste("Epidemic Model with R0 =", R0)
+plot(res$CumCases/N, type="l", main = title, xlab="time in days", ylab ="")
+lines(res$Infectious/N, col="blue")
+which.max(res$Infectious)
+res$InfectiousNames; length(res$InfectiousNames)
+
+
+IFR
+sim = NULL
+i = 0
+deaths = 112
+IFRvalues = c(0.005, 0.01, 0.015, 0.02)
+cols = c("red", "green", "blue", "brown")
+for (IFR in IFRvalues){
+i = i+1
+res0 = epidemicMZ(InitCond, Time, pAS, IFR, dInf, R0, Management)
+D = min(which(res0$TotalDeaths>deaths))
+abline(v = D, col=cols[i])
+sim = rbind(sim, c(D, IFR, res0$CumCases[D], res0$Infectious[D],
+  res0$CumCases[D]/N, res0$Infectious[D]/N))
+}
+colnames(sim) = c("Model time", "IFR", "CumCases","Infectious","relCumCases", "relInfectious")
+sim # kolik je v modelu s danym poctem mrtvych celkove nakazenych a infekcnich
+legend("right", pch=15, col = c("black", "blue"), 
+  legend = c("Relative Cummulative Cases", "Relative Infectious"))
+
+screen(2)
+plot(sim[,2], sim[,3]/N, xlab ="assumed Infection Fatality Rate",
+ ylab = "", type="b",
+ main = paste(deaths, "Observed Deaths") , xlim = c(0.003, 0.027), 
+ ylim = c(0, max(sim[,3]/N)))
+lines(sim[,2], sim[,4]/N, col = "blue", type = "b")
+text(sim[,2], sim[,3]/N, paste("IFR =", IFRvalues), col = cols, pos=4) 
+legend("topright", pch=15, col = c("black", "blue"), 
+  legend = c("Relative Cummulative Cases", "Relative Infectious"))
+
+
+
+
+
+
+
+
+
